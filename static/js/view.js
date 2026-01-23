@@ -1,0 +1,156 @@
+const socket = io();
+const remoteVideo = document.getElementById('remoteVideo');
+const connectionStatus = document.getElementById('connectionStatus');
+
+let peerConnection = null;
+
+const rtcConfig = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' }
+    ]
+};
+
+// Initialize viewing
+socket.on('connect', () => {
+    console.log('Connected to server:', socket.id);
+    connectionStatus.textContent = 'Connecting...';
+    
+    // Join the camera room
+    socket.emit('join_camera', { camera_id: CAMERA_ID });
+});
+
+// Receive offer from streamer
+socket.on('offer', async (data) => {
+    console.log('Received offer from streamer');
+    connectionStatus.textContent = 'Establishing connection...';
+    
+    try {
+        // Create peer connection
+        peerConnection = new RTCPeerConnection(rtcConfig);
+        
+        // Handle incoming tracks
+        peerConnection.ontrack = (event) => {
+            console.log('Received remote track');
+            if (event.streams && event.streams[0]) {
+                remoteVideo.srcObject = event.streams[0];
+                connectionStatus.textContent = 'Connected';
+                setTimeout(() => {
+                    connectionStatus.style.display = 'none';
+                }, 2000);
+            }
+        };
+        
+        // Handle ICE candidates
+        peerConnection.onicecandidate = (event) => {
+            if (event.candidate) {
+                socket.emit('ice_candidate', {
+                    target: data.from,
+                    candidate: event.candidate
+                });
+            }
+        };
+        
+        // Handle connection state changes
+        peerConnection.onconnectionstatechange = () => {
+            console.log('Connection state:', peerConnection.connectionState);
+            
+            switch(peerConnection.connectionState) {
+                case 'connected':
+                    connectionStatus.textContent = 'Connected';
+                    setTimeout(() => {
+                        connectionStatus.style.display = 'none';
+                    }, 2000);
+                    break;
+                case 'connecting':
+                    connectionStatus.textContent = 'Connecting...';
+                    connectionStatus.style.display = 'block';
+                    break;
+                case 'disconnected':
+                    connectionStatus.textContent = 'Stream disconnected. Reconnecting...';
+                    connectionStatus.style.display = 'block';
+                    break;
+                case 'failed':
+                    connectionStatus.textContent = 'Connection failed. Please refresh the page.';
+                    connectionStatus.style.display = 'block';
+                    break;
+                case 'closed':
+                    connectionStatus.textContent = 'Stream ended';
+                    connectionStatus.style.display = 'block';
+                    break;
+            }
+        };
+        
+        // Handle ICE connection state changes
+        peerConnection.oniceconnectionstatechange = () => {
+            console.log('ICE connection state:', peerConnection.iceConnectionState);
+        };
+        
+        // Set remote description and create answer
+        await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+        
+        // Send answer back to streamer
+        socket.emit('answer', {
+            target: data.from,
+            answer: answer
+        });
+        
+        console.log('Answer sent to streamer');
+        
+    } catch (error) {
+        console.error('Error handling offer:', error);
+        connectionStatus.textContent = 'Error establishing connection';
+        connectionStatus.style.display = 'block';
+    }
+});
+
+// Receive ICE candidates
+socket.on('ice_candidate', async (data) => {
+    if (peerConnection && data.candidate) {
+        try {
+            await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+            console.log('ICE candidate added');
+        } catch (error) {
+            console.error('Error adding ICE candidate:', error);
+        }
+    }
+});
+
+socket.on('error', (data) => {
+    console.error('Socket error:', data);
+    connectionStatus.textContent = data.message || 'Camera not found or offline';
+    connectionStatus.style.display = 'block';
+    
+    // Redirect to home after 3 seconds
+    setTimeout(() => {
+        window.location.href = '/';
+    }, 3000);
+});
+
+socket.on('disconnect', () => {
+    console.log('Disconnected from server');
+    connectionStatus.textContent = 'Disconnected from server';
+    connectionStatus.style.display = 'block';
+});
+
+// Clean up on page unload
+window.addEventListener('beforeunload', () => {
+    if (peerConnection) {
+        peerConnection.close();
+    }
+    socket.emit('leave_camera', { camera_id: CAMERA_ID });
+});
+
+// Also clean up when page visibility changes (mobile)
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        // Page is hidden, prepare for potential cleanup
+        console.log('Page hidden');
+    } else {
+        // Page is visible again
+        console.log('Page visible');
+    }
+});
