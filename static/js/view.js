@@ -10,6 +10,7 @@ let peerConnection = null;
 let isViewerMuted = false;
 let receivedTracks = [];
 let streamerHasScreenShare = false;
+let hasReceivedSecondVideo = false;
 let reconnectAttempts = 0;
 let maxReconnectAttempts = 5;
 let reconnectTimeout = null;
@@ -39,7 +40,6 @@ function toggleViewerMute() {
     }
 }
 
-// Handle page visibility changes (when user switches apps)
 document.addEventListener('visibilitychange', () => {
     if (document.hidden) {
         console.log('Page hidden - viewer left app');
@@ -48,7 +48,6 @@ document.addEventListener('visibilitychange', () => {
         console.log('Page visible - viewer returned to app');
         isPageVisible = true;
         
-        // Check connection state when returning
         if (!socket.connected || 
             (peerConnection && peerConnection.connectionState !== 'connected')) {
             console.log('Connection lost while away - attempting to reconnect');
@@ -61,26 +60,22 @@ function attemptReconnect() {
     connectionStatus.textContent = 'Reconnecting...';
     connectionStatus.style.display = 'block';
     
-    // Close existing peer connection
     if (peerConnection) {
         peerConnection.close();
         peerConnection = null;
     }
     
-    // Reset received tracks
     receivedTracks = [];
+    hasReceivedSecondVideo = false;
     
-    // Force socket reconnection if disconnected
     if (!socket.connected) {
         socket.connect();
     } else {
-        // If socket is connected but peer connection failed, rejoin camera
         socket.emit('join_camera', { camera_id: CAMERA_ID });
     }
     
     reconnectAttempts++;
     
-    // Set timeout for next reconnect attempt if this fails
     if (reconnectAttempts < maxReconnectAttempts) {
         reconnectTimeout = setTimeout(() => {
             if (!socket.connected || 
@@ -88,9 +83,8 @@ function attemptReconnect() {
                 console.log(`Reconnect attempt ${reconnectAttempts + 1}/${maxReconnectAttempts}`);
                 attemptReconnect();
             }
-        }, 3000); // Try again after 3 seconds
+        }, 3000);
     } else {
-        // Max attempts reached - auto refresh page
         connectionStatus.textContent = 'Refreshing page to restore connection...';
         setTimeout(() => {
             window.location.reload();
@@ -102,7 +96,6 @@ socket.on('connect', () => {
     console.log('Connected to server:', socket.id);
     connectionStatus.textContent = 'Connecting...';
     
-    // Reset reconnect attempts on successful connection
     reconnectAttempts = 0;
     if (reconnectTimeout) {
         clearTimeout(reconnectTimeout);
@@ -117,6 +110,7 @@ socket.on('offer', async (data) => {
     connectionStatus.textContent = 'Establishing connection...';
     
     streamerHasScreenShare = data.hasScreenShare || false;
+    console.log('Streamer has screen share:', streamerHasScreenShare);
     
     try {
         peerConnection = new RTCPeerConnection(rtcConfig);
@@ -127,6 +121,7 @@ socket.on('offer', async (data) => {
             
             if (event.track.kind === 'video') {
                 const videoTrackCount = receivedTracks.filter(t => t.kind === 'video').length;
+                console.log('Video track count:', videoTrackCount);
                 
                 if (videoTrackCount === 1) {
                     console.log('Setting first video (camera) to remoteVideo');
@@ -138,15 +133,29 @@ socket.on('offer', async (data) => {
                     remoteVideo.srcObject = stream;
                     remoteVideo.volume = 1.0;
                     
-                    if (!streamerHasScreenShare) {
-                        showScreenPlaceholder();
-                    }
+                    // Wait 2 seconds to see if second video arrives
+                    // Only show placeholder if we're sure there's no second video
+                    setTimeout(() => {
+                        if (!hasReceivedSecondVideo && !streamerHasScreenShare) {
+                            console.log('No second video after 2 seconds - showing placeholder');
+                            showScreenPlaceholder();
+                        }
+                    }, 2000);
                 } 
                 else if (videoTrackCount === 2) {
                     console.log('Setting second video (screen) to remoteVideo2');
+                    hasReceivedSecondVideo = true;
+                    
+                    // Remove placeholder if it exists
+                    const placeholder = document.getElementById('screen-placeholder');
+                    if (placeholder) {
+                        placeholder.remove();
+                    }
+                    
                     const stream = new MediaStream([event.track]);
                     remoteVideo2.srcObject = stream;
                     remoteVideo2.style.display = 'block';
+                    screenLabel.textContent = 'Screen Feed';
                     screenLabel.style.display = 'block';
                     videoWrapper2.style.display = 'block';
                 }
@@ -160,7 +169,7 @@ socket.on('offer', async (data) => {
             muteViewerBtn.style.display = 'inline-block';
             
             connectionStatus.textContent = 'Connected';
-            reconnectAttempts = 0; // Reset on successful connection
+            reconnectAttempts = 0;
             
             setTimeout(() => {
                 connectionStatus.style.display = 'none';
@@ -196,7 +205,6 @@ socket.on('offer', async (data) => {
                     connectionStatus.style.display = 'block';
                     muteViewerBtn.style.display = 'none';
                     
-                    // Auto-reconnect after 2 seconds
                     setTimeout(() => {
                         if (isPageVisible) {
                             attemptReconnect();
@@ -208,7 +216,6 @@ socket.on('offer', async (data) => {
                     connectionStatus.style.display = 'block';
                     muteViewerBtn.style.display = 'none';
                     
-                    // Auto-reconnect immediately
                     if (isPageVisible) {
                         attemptReconnect();
                     }
@@ -218,7 +225,6 @@ socket.on('offer', async (data) => {
                     connectionStatus.style.display = 'block';
                     muteViewerBtn.style.display = 'none';
                     
-                    // Try to reconnect in case stream is still active
                     setTimeout(() => {
                         if (isPageVisible) {
                             attemptReconnect();
@@ -244,7 +250,6 @@ socket.on('offer', async (data) => {
         connectionStatus.textContent = 'Error establishing connection. Retrying...';
         connectionStatus.style.display = 'block';
         
-        // Retry on error
         setTimeout(() => {
             if (isPageVisible) {
                 attemptReconnect();
@@ -302,7 +307,6 @@ socket.on('error', (data) => {
     connectionStatus.textContent = data.message || 'Camera not found or offline';
     connectionStatus.style.display = 'block';
     
-    // Camera not found - redirect after delay
     setTimeout(() => {
         window.location.href = '/';
     }, 3000);
@@ -314,7 +318,6 @@ socket.on('disconnect', () => {
     connectionStatus.style.display = 'block';
     muteViewerBtn.style.display = 'none';
     
-    // Socket.io will auto-reconnect, but we can help it along
     if (isPageVisible) {
         setTimeout(() => {
             if (!socket.connected) {
@@ -341,18 +344,16 @@ window.addEventListener('beforeunload', () => {
     socket.emit('leave_camera', { camera_id: CAMERA_ID });
 });
 
-// Monitor connection health periodically
 setInterval(() => {
     if (isPageVisible) {
-        // Check if we should be connected but aren't
         if (!socket.connected || 
             (peerConnection && 
              peerConnection.connectionState !== 'connected' && 
              peerConnection.connectionState !== 'connecting')) {
             console.log('Periodic check: connection issue detected');
-            if (reconnectAttempts === 0) { // Avoid multiple simultaneous reconnects
+            if (reconnectAttempts === 0) {
                 attemptReconnect();
             }
         }
     }
-}, 10000); // Check every 10 seconds
+}, 10000);
