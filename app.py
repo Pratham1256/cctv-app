@@ -6,7 +6,15 @@ from datetime import datetime
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-here-change-in-production'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading', ping_timeout=60, ping_interval=25)
+socketio = SocketIO(
+    app, 
+    cors_allowed_origins="*", 
+    async_mode='threading', 
+    ping_timeout=120,
+    ping_interval=25,
+    logger=True,
+    engineio_logger=True
+)
 
 # In-memory storage for active cameras
 active_cameras = {}
@@ -98,7 +106,8 @@ def handle_start_stream():
         'name': camera_name,
         'socket_id': request.sid,
         'viewers': 0,
-        'started_at': datetime.now().isoformat()
+        'started_at': datetime.now().isoformat(),
+        'last_heartbeat': datetime.now().isoformat()
     }
     
     # Join room for this camera
@@ -110,6 +119,15 @@ def handle_start_stream():
     # Notify all clients about new camera
     emit('camera_list_updated', list(active_cameras.keys()), broadcast=True)
     print(f'New stream started: {camera_name} ({camera_id})')
+
+@socketio.on('heartbeat')
+def handle_heartbeat(data):
+    """Handle heartbeat from streamer to keep connection alive"""
+    camera_id = data.get('camera_id')
+    if camera_id in active_cameras:
+        active_cameras[camera_id]['last_heartbeat'] = datetime.now().isoformat()
+        emit('heartbeat_ack', {'status': 'alive'})
+        print(f'Heartbeat received from {camera_id}')
 
 @socketio.on('join_camera')
 def handle_join_camera(data):

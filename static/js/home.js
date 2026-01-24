@@ -1,10 +1,10 @@
 const socket = io();
 const cameraGrid = document.getElementById('camera-grid');
 
-// Load cameras on page load
 loadCameras();
 
-// Listen for camera list updates
+setInterval(loadCameras, 10000);
+
 socket.on('camera_list_updated', () => {
     loadCameras();
 });

@@ -14,9 +14,10 @@ const audioStatusEl = document.getElementById('audioStatus');
 let cameraStream = null;
 let screenStream = null;
 let cameraId = null;
-let peerConnections = {}; // Store connections to multiple viewers
+let peerConnections = {};
 let viewerCount = 0;
 let isAudioMuted = false;
+let heartbeatInterval = null;
 
 const rtcConfig = {
     iceServers: [
@@ -33,7 +34,6 @@ copyBtn.addEventListener('click', copyShareLink);
 
 async function startStreaming() {
     try {
-        // Get camera stream first
         cameraStream = await navigator.mediaDevices.getUserMedia({
             video: { 
                 width: { ideal: 1280 },
@@ -46,7 +46,6 @@ async function startStreaming() {
             }
         });
         
-        // Get screen stream
         screenStream = await navigator.mediaDevices.getDisplayMedia({
             video: {
                 width: { ideal: 1920 },
@@ -55,16 +54,13 @@ async function startStreaming() {
             audio: false
         });
         
-        // Display camera in local video
         localVideo.srcObject = cameraStream;
         
-        // Handle screen share stop button
         screenStream.getVideoTracks()[0].onended = () => {
             alert('Screen sharing stopped. Stream will end.');
             stopStreaming();
         };
         
-        // Request to start stream on server
         socket.emit('start_stream');
         
         startBtn.style.display = 'none';
@@ -78,7 +74,11 @@ async function startStreaming() {
 }
 
 function stopStreaming() {
-    // Stop all tracks
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+    
     if (cameraStream) {
         cameraStream.getTracks().forEach(track => track.stop());
     }
@@ -87,10 +87,7 @@ function stopStreaming() {
     }
     localVideo.srcObject = null;
     
-    // Close all peer connections
-    Object.values(peerConnections).forEach(pc => {
-        pc.close();
-    });
+    Object.values(peerConnections).forEach(pc => pc.close());
     peerConnections = {};
     
     window.location.href = '/';
@@ -118,9 +115,13 @@ function toggleMute() {
     }
 }
 
-// Socket events
 socket.on('connect', () => {
     console.log('Connected to server:', socket.id);
+    
+    if (cameraId && cameraStream) {
+        console.log('Reconnected - re-registering stream');
+        socket.emit('start_stream');
+    }
 });
 
 socket.on('stream_started', (data) => {
@@ -132,6 +133,13 @@ socket.on('stream_started', (data) => {
     shareLinkInput.value = shareUrl;
     shareLink.style.display = 'block';
     
+    heartbeatInterval = setInterval(() => {
+        if (cameraId) {
+            socket.emit('heartbeat', { camera_id: cameraId });
+            console.log('Heartbeat sent');
+        }
+    }, 30000);
+    
     console.log('Stream started:', data);
 });
 
@@ -139,33 +147,24 @@ socket.on('new_viewer', async (data) => {
     const viewerId = data.viewer_id;
     console.log('New viewer joined:', viewerId);
     
-    // Update viewer count
     viewerCount++;
     viewerCountEl.textContent = viewerCount;
     
-    // Create new peer connection for this viewer
     const peerConnection = new RTCPeerConnection(rtcConfig);
     peerConnections[viewerId] = peerConnection;
     
-    // Add camera stream tracks (with labels)
     if (cameraStream) {
         cameraStream.getTracks().forEach(track => {
-            const sender = peerConnection.addTrack(track, cameraStream);
-            // Mark this as camera stream
-            sender.track.contentHint = 'camera';
+            peerConnection.addTrack(track, cameraStream);
         });
     }
     
-    // Add screen stream tracks (with labels)
     if (screenStream) {
         screenStream.getTracks().forEach(track => {
-            const sender = peerConnection.addTrack(track, screenStream);
-            // Mark this as screen stream
-            sender.track.contentHint = 'screen';
+            peerConnection.addTrack(track, screenStream);
         });
     }
     
-    // Handle ICE candidates
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
             socket.emit('ice_candidate', {
@@ -175,7 +174,6 @@ socket.on('new_viewer', async (data) => {
         }
     };
     
-    // Handle connection state
     peerConnection.onconnectionstatechange = () => {
         console.log(`Connection state with ${viewerId}:`, peerConnection.connectionState);
         if (peerConnection.connectionState === 'disconnected' || 
@@ -190,7 +188,6 @@ socket.on('new_viewer', async (data) => {
     };
     
     try {
-        // Create and send offer
         const offer = await peerConnection.createOffer();
         await peerConnection.setLocalDescription(offer);
         
@@ -232,6 +229,17 @@ socket.on('ice_candidate', async (data) => {
 
 socket.on('disconnect', () => {
     console.log('Disconnected from server');
+    
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+        heartbeatInterval = null;
+    }
+    
+    console.log('Attempting to reconnect...');
+});
+
+socket.on('heartbeat_ack', (data) => {
+    console.log('Heartbeat acknowledged:', data.status);
 });
 
 function copyShareLink() {
@@ -256,8 +264,11 @@ function copyShareLink() {
     }
 }
 
-// Handle page unload
 window.addEventListener('beforeunload', () => {
+    if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+    }
+    
     if (cameraStream) {
         cameraStream.getTracks().forEach(track => track.stop());
     }
