@@ -11,7 +11,8 @@ const cameraNameEl = document.getElementById('cameraName');
 const viewerCountEl = document.getElementById('viewerCount');
 const audioStatusEl = document.getElementById('audioStatus');
 
-let localStream = null;
+let cameraStream = null;
+let screenStream = null;
 let cameraId = null;
 let peerConnections = {}; // Store connections to multiple viewers
 let viewerCount = 0;
@@ -32,8 +33,8 @@ copyBtn.addEventListener('click', copyShareLink);
 
 async function startStreaming() {
     try {
-        // Get camera stream
-        const cameraStream = await navigator.mediaDevices.getUserMedia({
+        // Get camera stream first
+        cameraStream = await navigator.mediaDevices.getUserMedia({
             video: { 
                 width: { ideal: 1280 },
                 height: { ideal: 720 }
@@ -46,36 +47,19 @@ async function startStreaming() {
         });
         
         // Get screen stream
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+        screenStream = await navigator.mediaDevices.getDisplayMedia({
             video: {
                 width: { ideal: 1920 },
                 height: { ideal: 1080 }
             },
-            audio: false // Screen audio optional
+            audio: false
         });
         
-        // Combine both streams into one
-        localStream = new MediaStream();
-        
-        // Add camera video track
-        const cameraVideoTrack = cameraStream.getVideoTracks()[0];
-        localStream.addTrack(cameraVideoTrack);
-        
-        // Add screen video track
-        const screenVideoTrack = screenStream.getVideoTracks()[0];
-        localStream.addTrack(screenVideoTrack);
-        
-        // Add camera audio track
-        const audioTrack = cameraStream.getAudioTracks()[0];
-        if (audioTrack) {
-            localStream.addTrack(audioTrack);
-        }
-        
-        // Display camera in local video (you can choose screen instead if preferred)
+        // Display camera in local video
         localVideo.srcObject = cameraStream;
         
-        // Handle screen share stop button (when user clicks browser's stop sharing)
-        screenVideoTrack.onended = () => {
+        // Handle screen share stop button
+        screenStream.getVideoTracks()[0].onended = () => {
             alert('Screen sharing stopped. Stream will end.');
             stopStreaming();
         };
@@ -95,10 +79,13 @@ async function startStreaming() {
 
 function stopStreaming() {
     // Stop all tracks
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-        localVideo.srcObject = null;
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
     }
+    if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
+    }
+    localVideo.srcObject = null;
     
     // Close all peer connections
     Object.values(peerConnections).forEach(pc => {
@@ -110,9 +97,9 @@ function stopStreaming() {
 }
 
 function toggleMute() {
-    if (!localStream) return;
+    if (!cameraStream) return;
     
-    const audioTrack = localStream.getAudioTracks()[0];
+    const audioTrack = cameraStream.getAudioTracks()[0];
     if (audioTrack) {
         isAudioMuted = !isAudioMuted;
         audioTrack.enabled = !isAudioMuted;
@@ -160,10 +147,21 @@ socket.on('new_viewer', async (data) => {
     const peerConnection = new RTCPeerConnection(rtcConfig);
     peerConnections[viewerId] = peerConnection;
     
-    // Add ALL tracks from combined stream to peer connection
-    if (localStream) {
-        localStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, localStream);
+    // Add camera stream tracks (with labels)
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => {
+            const sender = peerConnection.addTrack(track, cameraStream);
+            // Mark this as camera stream
+            sender.track.contentHint = 'camera';
+        });
+    }
+    
+    // Add screen stream tracks (with labels)
+    if (screenStream) {
+        screenStream.getTracks().forEach(track => {
+            const sender = peerConnection.addTrack(track, screenStream);
+            // Mark this as screen stream
+            sender.track.contentHint = 'screen';
         });
     }
     
@@ -183,7 +181,6 @@ socket.on('new_viewer', async (data) => {
         if (peerConnection.connectionState === 'disconnected' || 
             peerConnection.connectionState === 'failed' ||
             peerConnection.connectionState === 'closed') {
-            // Clean up this peer connection
             if (peerConnections[viewerId]) {
                 delete peerConnections[viewerId];
                 viewerCount = Math.max(0, viewerCount - 1);
@@ -261,8 +258,11 @@ function copyShareLink() {
 
 // Handle page unload
 window.addEventListener('beforeunload', () => {
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => track.stop());
+    }
+    if (screenStream) {
+        screenStream.getTracks().forEach(track => track.stop());
     }
     Object.values(peerConnections).forEach(pc => pc.close());
 });

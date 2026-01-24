@@ -3,10 +3,11 @@ const remoteVideo = document.getElementById('remoteVideo');
 const remoteVideo2 = document.getElementById('remoteVideo2');
 const connectionStatus = document.getElementById('connectionStatus');
 const muteViewerBtn = document.getElementById('muteViewerBtn');
+const screenLabel = document.getElementById('screenLabel');
 
 let peerConnection = null;
 let isViewerMuted = false;
-let videoTrackCount = 0;
+let receivedTracks = [];
 
 const rtcConfig = {
     iceServers: [
@@ -22,9 +23,7 @@ muteViewerBtn.addEventListener('click', toggleViewerMute);
 function toggleViewerMute() {
     isViewerMuted = !isViewerMuted;
     remoteVideo.muted = isViewerMuted;
-    if (remoteVideo2) {
-        remoteVideo2.muted = isViewerMuted;
-    }
+    remoteVideo2.muted = isViewerMuted;
     
     if (isViewerMuted) {
         muteViewerBtn.textContent = '🔇 Unmute';
@@ -55,30 +54,45 @@ socket.on('offer', async (data) => {
         
         // Handle incoming tracks
         peerConnection.ontrack = (event) => {
-            console.log('Received remote track:', event.track.kind);
-            videoTrackCount++;
+            console.log('Received track:', event.track.kind, 'ID:', event.track.id);
+            receivedTracks.push(event.track);
             
-            if (event.streams && event.streams[0]) {
-                // First video track goes to main video element
-                if (videoTrackCount === 1 || event.track.kind === 'audio') {
-                    remoteVideo.srcObject = event.streams[0];
+            if (event.track.kind === 'video') {
+                // First video track = camera
+                if (receivedTracks.filter(t => t.kind === 'video').length === 1) {
+                    console.log('Setting first video (camera) to remoteVideo');
+                    const stream = new MediaStream([event.track]);
+                    // Also add audio if available
+                    const audioTrack = receivedTracks.find(t => t.kind === 'audio');
+                    if (audioTrack) {
+                        stream.addTrack(audioTrack);
+                    }
+                    remoteVideo.srcObject = stream;
                     remoteVideo.volume = 1.0;
-                } 
-                // Second video track goes to second video element
-                else if (videoTrackCount === 2) {
-                    const stream2 = new MediaStream([event.track]);
-                    remoteVideo2.srcObject = stream2;
-                    remoteVideo2.style.display = 'block';
                 }
-                
-                // Show mute button once stream is connected
-                muteViewerBtn.style.display = 'inline-block';
-                
-                connectionStatus.textContent = 'Connected';
-                setTimeout(() => {
-                    connectionStatus.style.display = 'none';
-                }, 2000);
+                // Second video track = screen
+                else if (receivedTracks.filter(t => t.kind === 'video').length === 2) {
+                    console.log('Setting second video (screen) to remoteVideo2');
+                    const stream = new MediaStream([event.track]);
+                    remoteVideo2.srcObject = stream;
+                    remoteVideo2.style.display = 'block';
+                    screenLabel.style.display = 'block';
+                }
+            } 
+            else if (event.track.kind === 'audio') {
+                // Add audio to first video if it exists
+                if (remoteVideo.srcObject) {
+                    remoteVideo.srcObject.addTrack(event.track);
+                }
             }
+            
+            // Show mute button once we have streams
+            muteViewerBtn.style.display = 'inline-block';
+            
+            connectionStatus.textContent = 'Connected';
+            setTimeout(() => {
+                connectionStatus.style.display = 'none';
+            }, 2000);
         };
         
         // Handle ICE candidates
@@ -122,11 +136,6 @@ socket.on('offer', async (data) => {
                     muteViewerBtn.style.display = 'none';
                     break;
             }
-        };
-        
-        // Handle ICE connection state changes
-        peerConnection.oniceconnectionstatechange = () => {
-            console.log('ICE connection state:', peerConnection.iceConnectionState);
         };
         
         // Set remote description and create answer
