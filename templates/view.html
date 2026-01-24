@@ -19,7 +19,7 @@
                     <video id="remoteVideo" autoplay playsinline controls></video>
                     <div class="video-label">Camera Feed</div>
                 </div>
-                <div class="video-wrapper">
+                <div class="video-wrapper" id="videoWrapper2" style="display: none;">
                     <video id="remoteVideo2" autoplay playsinline controls style="display: none;"></video>
                     <div class="video-label" id="screenLabel" style="display: none;">Screen Feed</div>
                 </div>
@@ -37,20 +37,6 @@
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
     <script>
         const CAMERA_ID = "{{ camera_id }}";
-        
-        // Show screen label when second video appears
-        const observer = new MutationObserver(() => {
-            const video2 = document.getElementById('remoteVideo2');
-            const label = document.getElementById('screenLabel');
-            if (video2.style.display === 'block') {
-                label.style.display = 'block';
-            }
-        });
-        
-        observer.observe(document.getElementById('remoteVideo2'), {
-            attributes: true,
-            attributeFilter: ['style']
-        });
     </script>
     <script src="{{ url_for('static', filename='js/view.js') }}"></script>
 </body>

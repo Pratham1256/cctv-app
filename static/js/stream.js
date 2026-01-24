@@ -10,6 +10,7 @@ const copyBtn = document.getElementById('copyBtn');
 const cameraNameEl = document.getElementById('cameraName');
 const viewerCountEl = document.getElementById('viewerCount');
 const audioStatusEl = document.getElementById('audioStatus');
+const streamingInfoEl = document.getElementById('streamingInfo');
 
 let cameraStream = null;
 let screenStream = null;
@@ -18,6 +19,7 @@ let peerConnections = {};
 let viewerCount = 0;
 let isAudioMuted = false;
 let heartbeatInterval = null;
+let hasScreenShare = false;
 
 const rtcConfig = {
     iceServers: [
@@ -34,6 +36,7 @@ copyBtn.addEventListener('click', copyShareLink);
 
 async function startStreaming() {
     try {
+        // Get camera stream first
         cameraStream = await navigator.mediaDevices.getUserMedia({
             video: { 
                 width: { ideal: 1280 },
@@ -46,21 +49,36 @@ async function startStreaming() {
             }
         });
         
-        screenStream = await navigator.mediaDevices.getDisplayMedia({
-            video: {
-                width: { ideal: 1920 },
-                height: { ideal: 1080 }
-            },
-            audio: false
-        });
-        
         localVideo.srcObject = cameraStream;
         
-        screenStream.getVideoTracks()[0].onended = () => {
-            alert('Screen sharing stopped. Stream will end.');
-            stopStreaming();
-        };
+        // Try to get screen stream (may fail on mobile)
+        try {
+            screenStream = await navigator.mediaDevices.getDisplayMedia({
+                video: {
+                    width: { ideal: 1920 },
+                    height: { ideal: 1080 }
+                },
+                audio: false
+            });
+            
+            hasScreenShare = true;
+            console.log('Screen sharing enabled');
+            
+            // Handle screen share stop button
+            screenStream.getVideoTracks()[0].onended = () => {
+                alert('Screen sharing stopped. Stream will end.');
+                stopStreaming();
+            };
+            
+        } catch (screenError) {
+            console.warn('Screen sharing not available or denied:', screenError);
+            hasScreenShare = false;
+            
+            // Show notification that only camera is streaming
+            alert('Screen sharing is not available on this device. Streaming camera only.');
+        }
         
+        // Request to start stream on server
         socket.emit('start_stream');
         
         startBtn.style.display = 'none';
@@ -69,7 +87,7 @@ async function startStreaming() {
         
     } catch (error) {
         console.error('Error accessing media devices:', error);
-        alert('Could not access camera/microphone/screen. Please grant permissions and ensure you are using HTTPS.');
+        alert('Could not access camera/microphone. Please grant permissions and ensure you are using HTTPS.');
     }
 }
 
@@ -129,6 +147,14 @@ socket.on('stream_started', (data) => {
     cameraNameEl.textContent = data.camera_name;
     streamInfo.style.display = 'block';
     
+    // Update streaming info based on what's available
+    if (hasScreenShare) {
+        streamingInfoEl.textContent = '📹 Streaming: Camera + Screen';
+    } else {
+        streamingInfoEl.textContent = '📹 Streaming: Camera Only';
+        streamingInfoEl.style.color = '#f59e0b';
+    }
+    
     const shareUrl = `${window.location.origin}/camera/${cameraId}`;
     shareLinkInput.value = shareUrl;
     shareLink.style.display = 'block';
@@ -153,13 +179,15 @@ socket.on('new_viewer', async (data) => {
     const peerConnection = new RTCPeerConnection(rtcConfig);
     peerConnections[viewerId] = peerConnection;
     
+    // Add camera stream tracks
     if (cameraStream) {
         cameraStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, cameraStream);
         });
     }
     
-    if (screenStream) {
+    // Add screen stream tracks (only if available)
+    if (screenStream && hasScreenShare) {
         screenStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, screenStream);
         });
@@ -193,7 +221,8 @@ socket.on('new_viewer', async (data) => {
         
         socket.emit('offer', {
             target: viewerId,
-            offer: offer
+            offer: offer,
+            hasScreenShare: hasScreenShare  // Send info about screen share availability
         });
     } catch (error) {
         console.error('Error creating offer:', error);
