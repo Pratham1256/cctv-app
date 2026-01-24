@@ -32,8 +32,8 @@ copyBtn.addEventListener('click', copyShareLink);
 
 async function startStreaming() {
     try {
-        // Get user media with audio and video
-        localStream = await navigator.mediaDevices.getUserMedia({
+        // Get camera stream
+        const cameraStream = await navigator.mediaDevices.getUserMedia({
             video: { 
                 width: { ideal: 1280 },
                 height: { ideal: 720 }
@@ -45,7 +45,40 @@ async function startStreaming() {
             }
         });
         
-        localVideo.srcObject = localStream;
+        // Get screen stream
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+            video: {
+                width: { ideal: 1920 },
+                height: { ideal: 1080 }
+            },
+            audio: false // Screen audio optional
+        });
+        
+        // Combine both streams into one
+        localStream = new MediaStream();
+        
+        // Add camera video track
+        const cameraVideoTrack = cameraStream.getVideoTracks()[0];
+        localStream.addTrack(cameraVideoTrack);
+        
+        // Add screen video track
+        const screenVideoTrack = screenStream.getVideoTracks()[0];
+        localStream.addTrack(screenVideoTrack);
+        
+        // Add camera audio track
+        const audioTrack = cameraStream.getAudioTracks()[0];
+        if (audioTrack) {
+            localStream.addTrack(audioTrack);
+        }
+        
+        // Display camera in local video (you can choose screen instead if preferred)
+        localVideo.srcObject = cameraStream;
+        
+        // Handle screen share stop button (when user clicks browser's stop sharing)
+        screenVideoTrack.onended = () => {
+            alert('Screen sharing stopped. Stream will end.');
+            stopStreaming();
+        };
         
         // Request to start stream on server
         socket.emit('start_stream');
@@ -56,7 +89,7 @@ async function startStreaming() {
         
     } catch (error) {
         console.error('Error accessing media devices:', error);
-        alert('Could not access camera/microphone. Please grant permissions and ensure you are using HTTPS.');
+        alert('Could not access camera/microphone/screen. Please grant permissions and ensure you are using HTTPS.');
     }
 }
 
@@ -73,7 +106,6 @@ function stopStreaming() {
     });
     peerConnections = {};
     
-    // Disconnect will be handled by beforeunload
     window.location.href = '/';
 }
 
@@ -128,7 +160,7 @@ socket.on('new_viewer', async (data) => {
     const peerConnection = new RTCPeerConnection(rtcConfig);
     peerConnections[viewerId] = peerConnection;
     
-    // Add local stream tracks to peer connection
+    // Add ALL tracks from combined stream to peer connection
     if (localStream) {
         localStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, localStream);
@@ -207,9 +239,8 @@ socket.on('disconnect', () => {
 
 function copyShareLink() {
     shareLinkInput.select();
-    shareLinkInput.setSelectionRange(0, 99999); // For mobile devices
+    shareLinkInput.setSelectionRange(0, 99999);
     
-    // Modern clipboard API
     if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(shareLinkInput.value).then(() => {
             const originalText = copyBtn.textContent;
@@ -219,7 +250,6 @@ function copyShareLink() {
             }, 2000);
         });
     } else {
-        // Fallback for older browsers
         document.execCommand('copy');
         const originalText = copyBtn.textContent;
         copyBtn.textContent = '✓ Copied!';

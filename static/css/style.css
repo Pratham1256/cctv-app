@@ -148,6 +148,31 @@ h1 {
     margin-bottom: 20px;
 }
 
+.dual-video-wrapper {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 15px;
+    margin-bottom: 20px;
+}
+
+.video-label {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    background: rgba(0, 0, 0, 0.7);
+    color: white;
+    padding: 5px 12px;
+    border-radius: 5px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+@media (max-width: 768px) {
+    .dual-video-wrapper {
+        grid-template-columns: 1fr;
+    }
+}
+
 video {
     width: 100%;
     display: block;

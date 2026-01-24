@@ -1,10 +1,12 @@
 const socket = io();
 const remoteVideo = document.getElementById('remoteVideo');
+const remoteVideo2 = document.getElementById('remoteVideo2');
 const connectionStatus = document.getElementById('connectionStatus');
 const muteViewerBtn = document.getElementById('muteViewerBtn');
 
 let peerConnection = null;
 let isViewerMuted = false;
+let videoTrackCount = 0;
 
 const rtcConfig = {
     iceServers: [
@@ -20,6 +22,9 @@ muteViewerBtn.addEventListener('click', toggleViewerMute);
 function toggleViewerMute() {
     isViewerMuted = !isViewerMuted;
     remoteVideo.muted = isViewerMuted;
+    if (remoteVideo2) {
+        remoteVideo2.muted = isViewerMuted;
+    }
     
     if (isViewerMuted) {
         muteViewerBtn.textContent = '🔇 Unmute';
@@ -50,10 +55,21 @@ socket.on('offer', async (data) => {
         
         // Handle incoming tracks
         peerConnection.ontrack = (event) => {
-            console.log('Received remote track');
+            console.log('Received remote track:', event.track.kind);
+            videoTrackCount++;
+            
             if (event.streams && event.streams[0]) {
-                remoteVideo.srcObject = event.streams[0];
-                remoteVideo.volume = 1.0; // Ensure volume is at maximum
+                // First video track goes to main video element
+                if (videoTrackCount === 1 || event.track.kind === 'audio') {
+                    remoteVideo.srcObject = event.streams[0];
+                    remoteVideo.volume = 1.0;
+                } 
+                // Second video track goes to second video element
+                else if (videoTrackCount === 2) {
+                    const stream2 = new MediaStream([event.track]);
+                    remoteVideo2.srcObject = stream2;
+                    remoteVideo2.style.display = 'block';
+                }
                 
                 // Show mute button once stream is connected
                 muteViewerBtn.style.display = 'inline-block';
@@ -169,15 +185,4 @@ window.addEventListener('beforeunload', () => {
         peerConnection.close();
     }
     socket.emit('leave_camera', { camera_id: CAMERA_ID });
-});
-
-// Also clean up when page visibility changes (mobile)
-document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-        // Page is hidden, prepare for potential cleanup
-        console.log('Page hidden');
-    } else {
-        // Page is visible again
-        console.log('Page visible');
-    }
 });
