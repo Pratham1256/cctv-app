@@ -180,6 +180,7 @@ video {
     gap: 15px;
     justify-content: center;
     margin-bottom: 20px;
+    flex-wrap: wrap;
 }
 
 .btn-primary, .btn-danger, .btn-copy {

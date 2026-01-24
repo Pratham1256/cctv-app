@@ -2,17 +2,20 @@ const socket = io();
 const localVideo = document.getElementById('localVideo');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
+const muteBtn = document.getElementById('muteBtn');
 const streamInfo = document.getElementById('streamInfo');
 const shareLink = document.getElementById('shareLink');
 const shareLinkInput = document.getElementById('shareLinkInput');
 const copyBtn = document.getElementById('copyBtn');
 const cameraNameEl = document.getElementById('cameraName');
 const viewerCountEl = document.getElementById('viewerCount');
+const audioStatusEl = document.getElementById('audioStatus');
 
 let localStream = null;
 let cameraId = null;
 let peerConnections = {}; // Store connections to multiple viewers
 let viewerCount = 0;
+let isAudioMuted = false;
 
 const rtcConfig = {
     iceServers: [
@@ -24,17 +27,22 @@ const rtcConfig = {
 
 startBtn.addEventListener('click', startStreaming);
 stopBtn.addEventListener('click', stopStreaming);
+muteBtn.addEventListener('click', toggleMute);
 copyBtn.addEventListener('click', copyShareLink);
 
 async function startStreaming() {
     try {
-        // Get user media
+        // Get user media with audio and video
         localStream = await navigator.mediaDevices.getUserMedia({
             video: { 
                 width: { ideal: 1280 },
                 height: { ideal: 720 }
             },
-            audio: true
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
         });
         
         localVideo.srcObject = localStream;
@@ -44,6 +52,7 @@ async function startStreaming() {
         
         startBtn.style.display = 'none';
         stopBtn.style.display = 'block';
+        muteBtn.style.display = 'block';
         
     } catch (error) {
         console.error('Error accessing media devices:', error);
@@ -66,6 +75,28 @@ function stopStreaming() {
     
     // Disconnect will be handled by beforeunload
     window.location.href = '/';
+}
+
+function toggleMute() {
+    if (!localStream) return;
+    
+    const audioTrack = localStream.getAudioTracks()[0];
+    if (audioTrack) {
+        isAudioMuted = !isAudioMuted;
+        audioTrack.enabled = !isAudioMuted;
+        
+        if (isAudioMuted) {
+            muteBtn.textContent = '🔇 Unmute Audio';
+            muteBtn.style.background = '#ef4444';
+            audioStatusEl.textContent = 'MUTED';
+            audioStatusEl.style.color = '#ef4444';
+        } else {
+            muteBtn.textContent = '🎤 Mute Audio';
+            muteBtn.style.background = '#667eea';
+            audioStatusEl.textContent = 'ON';
+            audioStatusEl.style.color = '#4ade80';
+        }
+    }
 }
 
 // Socket events

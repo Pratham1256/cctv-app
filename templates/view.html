@@ -15,10 +15,14 @@
 
         <div class="stream-container">
             <div class="video-wrapper">
-                <video id="remoteVideo" autoplay playsinline></video>
+                <video id="remoteVideo" autoplay playsinline controls></video>
                 <div id="connectionStatus" class="connection-status">
                     Connecting...
                 </div>
+            </div>
+            
+            <div class="controls">
+                <button id="muteViewerBtn" class="btn-copy" style="display: none;">🔊 Mute</button>
             </div>
         </div>
     </div>

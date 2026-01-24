@@ -1,8 +1,10 @@
 const socket = io();
 const remoteVideo = document.getElementById('remoteVideo');
 const connectionStatus = document.getElementById('connectionStatus');
+const muteViewerBtn = document.getElementById('muteViewerBtn');
 
 let peerConnection = null;
+let isViewerMuted = false;
 
 const rtcConfig = {
     iceServers: [
@@ -11,6 +13,22 @@ const rtcConfig = {
         { urls: 'stun:stun2.l.google.com:19302' }
     ]
 };
+
+// Mute/Unmute button for viewer
+muteViewerBtn.addEventListener('click', toggleViewerMute);
+
+function toggleViewerMute() {
+    isViewerMuted = !isViewerMuted;
+    remoteVideo.muted = isViewerMuted;
+    
+    if (isViewerMuted) {
+        muteViewerBtn.textContent = '🔇 Unmute';
+        muteViewerBtn.style.background = '#ef4444';
+    } else {
+        muteViewerBtn.textContent = '🔊 Mute';
+        muteViewerBtn.style.background = '#667eea';
+    }
+}
 
 // Initialize viewing
 socket.on('connect', () => {
@@ -35,6 +53,11 @@ socket.on('offer', async (data) => {
             console.log('Received remote track');
             if (event.streams && event.streams[0]) {
                 remoteVideo.srcObject = event.streams[0];
+                remoteVideo.volume = 1.0; // Ensure volume is at maximum
+                
+                // Show mute button once stream is connected
+                muteViewerBtn.style.display = 'inline-block';
+                
                 connectionStatus.textContent = 'Connected';
                 setTimeout(() => {
                     connectionStatus.style.display = 'none';
@@ -70,14 +93,17 @@ socket.on('offer', async (data) => {
                 case 'disconnected':
                     connectionStatus.textContent = 'Stream disconnected. Reconnecting...';
                     connectionStatus.style.display = 'block';
+                    muteViewerBtn.style.display = 'none';
                     break;
                 case 'failed':
                     connectionStatus.textContent = 'Connection failed. Please refresh the page.';
                     connectionStatus.style.display = 'block';
+                    muteViewerBtn.style.display = 'none';
                     break;
                 case 'closed':
                     connectionStatus.textContent = 'Stream ended';
                     connectionStatus.style.display = 'block';
+                    muteViewerBtn.style.display = 'none';
                     break;
             }
         };
@@ -134,6 +160,7 @@ socket.on('disconnect', () => {
     console.log('Disconnected from server');
     connectionStatus.textContent = 'Disconnected from server';
     connectionStatus.style.display = 'block';
+    muteViewerBtn.style.display = 'none';
 });
 
 // Clean up on page unload
