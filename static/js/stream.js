@@ -23,7 +23,8 @@ let isAudioMuted = false;
 let isCameraOff = false;
 let heartbeatInterval = null;
 let hasScreenShare = false;
-let audioTrack = null; // Store audio track separately
+let currentVideoTrack = null; // Track current video track
+let audioTrack = null;
 
 const rtcConfig = {
     iceServers: [
@@ -53,7 +54,7 @@ async function startStreaming() {
             }
         });
         
-        // Store audio track separately
+        currentVideoTrack = cameraStream.getVideoTracks()[0];
         audioTrack = cameraStream.getAudioTracks()[0];
         
         localVideo.srcObject = cameraStream;
@@ -106,7 +107,12 @@ function stopStreaming() {
     if (screenStream) {
         screenStream.getTracks().forEach(track => track.stop());
     }
+    if (currentVideoTrack) {
+        currentVideoTrack.stop();
+    }
+    
     localVideo.srcObject = null;
+    currentVideoTrack = null;
     audioTrack = null;
     
     Object.values(peerConnections).forEach(pc => pc.close());
@@ -136,39 +142,36 @@ function toggleMute() {
 
 async function toggleCamera() {
     if (isCameraOff) {
-        // Turn camera ON - restart camera stream
+        // Turn camera ON
         try {
             const newCameraStream = await navigator.mediaDevices.getUserMedia({
                 video: { 
                     width: { ideal: 1280 },
                     height: { ideal: 720 }
                 },
-                audio: false // Don't request audio again
+                audio: false
             });
             
-            const newVideoTrack = newCameraStream.getVideoTracks()[0];
+            currentVideoTrack = newCameraStream.getVideoTracks()[0];
             
-            // Replace video track in local preview
-            const oldVideoTrack = cameraStream.getVideoTracks()[0];
-            if (oldVideoTrack) {
-                cameraStream.removeTrack(oldVideoTrack);
-            }
-            cameraStream.addTrack(newVideoTrack);
-            
-            // Add audio track back to the stream for local display
+            // Update local stream
+            cameraStream = new MediaStream();
+            cameraStream.addTrack(currentVideoTrack);
             if (audioTrack) {
                 cameraStream.addTrack(audioTrack);
             }
             
             localVideo.srcObject = cameraStream;
             
-            // Replace video track in all peer connections
+            // Replace video track in all existing peer connections
             for (const [viewerId, pc] of Object.entries(peerConnections)) {
                 const senders = pc.getSenders();
-                const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video' && sender.track.id === oldVideoTrack?.id);
+                const videoSender = senders.find(sender => 
+                    !sender.track || sender.track.kind === 'video'
+                );
                 
                 if (videoSender) {
-                    await videoSender.replaceTrack(newVideoTrack);
+                    await videoSender.replaceTrack(currentVideoTrack);
                     console.log('Replaced video track for viewer:', viewerId);
                 }
             }
@@ -188,19 +191,19 @@ async function toggleCamera() {
         }
         
     } else {
-        // Turn camera OFF - stop camera track
-        const videoTrack = cameraStream.getVideoTracks()[0];
-        if (videoTrack) {
-            // Stop the track (turns off camera light)
-            videoTrack.stop();
+        // Turn camera OFF
+        if (currentVideoTrack) {
+            currentVideoTrack.stop();
             
-            // Remove from stream
-            cameraStream.removeTrack(videoTrack);
+            // Remove from local stream
+            cameraStream.removeTrack(currentVideoTrack);
             
-            // Replace with null track in all peer connections
+            // Replace with null in all peer connections
             for (const [viewerId, pc] of Object.entries(peerConnections)) {
                 const senders = pc.getSenders();
-                const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video' && sender.track.id === videoTrack.id);
+                const videoSender = senders.find(sender => 
+                    sender.track && sender.track.kind === 'video' && sender.track.id === currentVideoTrack.id
+                );
                 
                 if (videoSender) {
                     await videoSender.replaceTrack(null);
@@ -208,6 +211,7 @@ async function toggleCamera() {
                 }
             }
             
+            currentVideoTrack = null;
             isCameraOff = true;
             toggleCameraBtn.textContent = '📹 Turn Camera On';
             toggleCameraBtn.style.background = '#ef4444';
@@ -215,7 +219,7 @@ async function toggleCamera() {
             cameraStatusEl.style.color = '#ef4444';
             localVideo.style.opacity = '0.3';
             
-            console.log('Camera turned OFF - light should be off');
+            console.log('Camera turned OFF');
         }
     }
 }
@@ -223,7 +227,7 @@ async function toggleCamera() {
 socket.on('connect', () => {
     console.log('Connected to server:', socket.id);
     
-    if (cameraId && cameraStream) {
+    if (cameraId && (cameraStream || screenStream)) {
         console.log('Reconnected - re-registering stream');
         socket.emit('start_stream');
     }
@@ -265,15 +269,22 @@ socket.on('new_viewer', async (data) => {
     const peerConnection = new RTCPeerConnection(rtcConfig);
     peerConnections[viewerId] = peerConnection;
     
-    if (cameraStream) {
-        cameraStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, cameraStream);
-        });
+    // Add camera tracks only if camera is ON
+    if (currentVideoTrack && !isCameraOff) {
+        peerConnection.addTrack(currentVideoTrack, cameraStream);
+        console.log('Added camera video track for new viewer');
     }
     
+    if (audioTrack) {
+        peerConnection.addTrack(audioTrack, cameraStream);
+        console.log('Added audio track for new viewer');
+    }
+    
+    // Always add screen share if available
     if (screenStream && hasScreenShare) {
         screenStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, screenStream);
+            console.log('Added screen track for new viewer');
         });
     }
     
@@ -387,6 +398,9 @@ window.addEventListener('beforeunload', () => {
     }
     if (screenStream) {
         screenStream.getTracks().forEach(track => track.stop());
+    }
+    if (currentVideoTrack) {
+        currentVideoTrack.stop();
     }
     Object.values(peerConnections).forEach(pc => pc.close());
 });
