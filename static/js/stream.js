@@ -23,7 +23,7 @@ let isAudioMuted = false;
 let isCameraOff = false;
 let heartbeatInterval = null;
 let hasScreenShare = false;
-let currentVideoTrack = null; // Track current video track
+let currentVideoTrack = null;
 let audioTrack = null;
 
 const rtcConfig = {
@@ -154,7 +154,8 @@ async function toggleCamera() {
             
             currentVideoTrack = newCameraStream.getVideoTracks()[0];
             
-            // Update local stream
+            // Recreate camera stream with new video track
+            const oldCameraStream = cameraStream;
             cameraStream = new MediaStream();
             cameraStream.addTrack(currentVideoTrack);
             if (audioTrack) {
@@ -166,13 +167,26 @@ async function toggleCamera() {
             // Replace video track in all existing peer connections
             for (const [viewerId, pc] of Object.entries(peerConnections)) {
                 const senders = pc.getSenders();
-                const videoSender = senders.find(sender => 
-                    !sender.track || sender.track.kind === 'video'
+                
+                // Find the sender that should have video (might be null if camera was off)
+                let videoSender = senders.find(sender => 
+                    sender.track && sender.track.kind === 'video' && sender.track !== screenStream?.getVideoTracks()[0]
                 );
+                
+                // If no video sender found, look for one without a track
+                if (!videoSender) {
+                    videoSender = senders.find(sender => 
+                        !sender.track || (sender.track.kind === 'video' && sender.track.readyState === 'ended')
+                    );
+                }
                 
                 if (videoSender) {
                     await videoSender.replaceTrack(currentVideoTrack);
                     console.log('Replaced video track for viewer:', viewerId);
+                } else {
+                    // No video sender exists, add the track
+                    pc.addTrack(currentVideoTrack, cameraStream);
+                    console.log('Added new video track for viewer:', viewerId);
                 }
             }
             
@@ -183,7 +197,7 @@ async function toggleCamera() {
             cameraStatusEl.style.color = '#4ade80';
             localVideo.style.opacity = '1';
             
-            console.log('Camera turned ON');
+            console.log('Camera turned ON - track active:', currentVideoTrack.readyState);
             
         } catch (error) {
             console.error('Error restarting camera:', error);
@@ -195,8 +209,12 @@ async function toggleCamera() {
         if (currentVideoTrack) {
             currentVideoTrack.stop();
             
-            // Remove from local stream
-            cameraStream.removeTrack(currentVideoTrack);
+            // Remove from local stream but keep audio
+            const oldStream = cameraStream;
+            cameraStream = new MediaStream();
+            if (audioTrack) {
+                cameraStream.addTrack(audioTrack);
+            }
             
             // Replace with null in all peer connections
             for (const [viewerId, pc] of Object.entries(peerConnections)) {
@@ -261,7 +279,7 @@ socket.on('stream_started', (data) => {
 
 socket.on('new_viewer', async (data) => {
     const viewerId = data.viewer_id;
-    console.log('New viewer joined:', viewerId);
+    console.log('New viewer joined. Camera OFF?', isCameraOff, 'Video track exists?', !!currentVideoTrack);
     
     viewerCount++;
     viewerCountEl.textContent = viewerCount;
@@ -269,22 +287,28 @@ socket.on('new_viewer', async (data) => {
     const peerConnection = new RTCPeerConnection(rtcConfig);
     peerConnections[viewerId] = peerConnection;
     
-    // Add camera tracks only if camera is ON
-    if (currentVideoTrack && !isCameraOff) {
+    // Add camera video track if camera is ON and track exists
+    if (currentVideoTrack && !isCameraOff && currentVideoTrack.readyState === 'live') {
         peerConnection.addTrack(currentVideoTrack, cameraStream);
-        console.log('Added camera video track for new viewer');
+        console.log('Added LIVE camera video track for new viewer');
+    } else {
+        console.log('Skipped camera video - OFF:', isCameraOff, 'Track state:', currentVideoTrack?.readyState);
     }
     
-    if (audioTrack) {
+    // Always add audio track if available
+    if (audioTrack && audioTrack.readyState === 'live') {
         peerConnection.addTrack(audioTrack, cameraStream);
         console.log('Added audio track for new viewer');
     }
     
     // Always add screen share if available
     if (screenStream && hasScreenShare) {
-        screenStream.getTracks().forEach(track => {
-            peerConnection.addTrack(track, screenStream);
-            console.log('Added screen track for new viewer');
+        const screenTracks = screenStream.getTracks();
+        screenTracks.forEach(track => {
+            if (track.readyState === 'live') {
+                peerConnection.addTrack(track, screenStream);
+                console.log('Added screen track for new viewer:', track.kind);
+            }
         });
     }
     
