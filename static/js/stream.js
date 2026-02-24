@@ -3,6 +3,7 @@ const localVideo = document.getElementById('localVideo');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const muteBtn = document.getElementById('muteBtn');
+const toggleCameraBtn = document.getElementById('toggleCameraBtn');
 const streamInfo = document.getElementById('streamInfo');
 const shareLink = document.getElementById('shareLink');
 const shareLinkInput = document.getElementById('shareLinkInput');
@@ -11,6 +12,7 @@ const cameraNameEl = document.getElementById('cameraName');
 const viewerCountEl = document.getElementById('viewerCount');
 const audioStatusEl = document.getElementById('audioStatus');
 const streamingInfoEl = document.getElementById('streamingInfo');
+const cameraStatusEl = document.getElementById('cameraStatus');
 
 let cameraStream = null;
 let screenStream = null;
@@ -18,6 +20,7 @@ let cameraId = null;
 let peerConnections = {};
 let viewerCount = 0;
 let isAudioMuted = false;
+let isCameraOff = false;
 let heartbeatInterval = null;
 let hasScreenShare = false;
 
@@ -32,11 +35,11 @@ const rtcConfig = {
 startBtn.addEventListener('click', startStreaming);
 stopBtn.addEventListener('click', stopStreaming);
 muteBtn.addEventListener('click', toggleMute);
+toggleCameraBtn.addEventListener('click', toggleCamera);
 copyBtn.addEventListener('click', copyShareLink);
 
 async function startStreaming() {
     try {
-        // Get camera stream first
         cameraStream = await navigator.mediaDevices.getUserMedia({
             video: { 
                 width: { ideal: 1280 },
@@ -51,7 +54,6 @@ async function startStreaming() {
         
         localVideo.srcObject = cameraStream;
         
-        // Try to get screen stream (may fail on mobile)
         try {
             screenStream = await navigator.mediaDevices.getDisplayMedia({
                 video: {
@@ -64,7 +66,6 @@ async function startStreaming() {
             hasScreenShare = true;
             console.log('Screen sharing enabled');
             
-            // Handle screen share stop button
             screenStream.getVideoTracks()[0].onended = () => {
                 alert('Screen sharing stopped. Stream will end.');
                 stopStreaming();
@@ -73,17 +74,15 @@ async function startStreaming() {
         } catch (screenError) {
             console.warn('Screen sharing not available or denied:', screenError);
             hasScreenShare = false;
-            
-            // Show notification that only camera is streaming
             alert('Screen sharing is not available on this device. Streaming camera only.');
         }
         
-        // Request to start stream on server
         socket.emit('start_stream');
         
         startBtn.style.display = 'none';
         stopBtn.style.display = 'block';
         muteBtn.style.display = 'block';
+        toggleCameraBtn.style.display = 'block';
         
     } catch (error) {
         console.error('Error accessing media devices:', error);
@@ -133,6 +132,32 @@ function toggleMute() {
     }
 }
 
+function toggleCamera() {
+    if (!cameraStream) return;
+    
+    const videoTrack = cameraStream.getVideoTracks()[0];
+    if (videoTrack) {
+        isCameraOff = !isCameraOff;
+        videoTrack.enabled = !isCameraOff;
+        
+        if (isCameraOff) {
+            toggleCameraBtn.textContent = '📹 Turn Camera On';
+            toggleCameraBtn.style.background = '#ef4444';
+            cameraStatusEl.textContent = 'OFF';
+            cameraStatusEl.style.color = '#ef4444';
+            localVideo.style.opacity = '0.3';
+        } else {
+            toggleCameraBtn.textContent = '📹 Turn Camera Off';
+            toggleCameraBtn.style.background = '#667eea';
+            cameraStatusEl.textContent = 'ON';
+            cameraStatusEl.style.color = '#4ade80';
+            localVideo.style.opacity = '1';
+        }
+        
+        console.log('Camera toggled:', isCameraOff ? 'OFF' : 'ON');
+    }
+}
+
 socket.on('connect', () => {
     console.log('Connected to server:', socket.id);
     
@@ -147,7 +172,6 @@ socket.on('stream_started', (data) => {
     cameraNameEl.textContent = data.camera_name;
     streamInfo.style.display = 'block';
     
-    // Update streaming info based on what's available
     if (hasScreenShare) {
         streamingInfoEl.textContent = '📹 Streaming: Camera + Screen';
     } else {
@@ -179,14 +203,12 @@ socket.on('new_viewer', async (data) => {
     const peerConnection = new RTCPeerConnection(rtcConfig);
     peerConnections[viewerId] = peerConnection;
     
-    // Add camera stream tracks
     if (cameraStream) {
         cameraStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, cameraStream);
         });
     }
     
-    // Add screen stream tracks (only if available)
     if (screenStream && hasScreenShare) {
         screenStream.getTracks().forEach(track => {
             peerConnection.addTrack(track, screenStream);
@@ -222,7 +244,7 @@ socket.on('new_viewer', async (data) => {
         socket.emit('offer', {
             target: viewerId,
             offer: offer,
-            hasScreenShare: hasScreenShare  // Send info about screen share availability
+            hasScreenShare: hasScreenShare
         });
     } catch (error) {
         console.error('Error creating offer:', error);
