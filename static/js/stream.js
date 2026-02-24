@@ -23,8 +23,6 @@ let isAudioMuted = false;
 let isCameraOff = false;
 let heartbeatInterval = null;
 let hasScreenShare = false;
-let currentVideoTrack = null;
-let audioTrack = null;
 
 const rtcConfig = {
     iceServers: [
@@ -53,9 +51,6 @@ async function startStreaming() {
                 autoGainControl: true
             }
         });
-        
-        currentVideoTrack = cameraStream.getVideoTracks()[0];
-        audioTrack = cameraStream.getAudioTracks()[0];
         
         localVideo.srcObject = cameraStream;
         
@@ -107,13 +102,8 @@ function stopStreaming() {
     if (screenStream) {
         screenStream.getTracks().forEach(track => track.stop());
     }
-    if (currentVideoTrack) {
-        currentVideoTrack.stop();
-    }
     
     localVideo.srcObject = null;
-    currentVideoTrack = null;
-    audioTrack = null;
     
     Object.values(peerConnections).forEach(pc => pc.close());
     peerConnections = {};
@@ -122,21 +112,24 @@ function stopStreaming() {
 }
 
 function toggleMute() {
-    if (!audioTrack) return;
+    if (!cameraStream) return;
     
-    isAudioMuted = !isAudioMuted;
-    audioTrack.enabled = !isAudioMuted;
-    
-    if (isAudioMuted) {
-        muteBtn.textContent = '🔇 Unmute Audio';
-        muteBtn.style.background = '#ef4444';
-        audioStatusEl.textContent = 'MUTED';
-        audioStatusEl.style.color = '#ef4444';
-    } else {
-        muteBtn.textContent = '🎤 Mute Audio';
-        muteBtn.style.background = '#667eea';
-        audioStatusEl.textContent = 'ON';
-        audioStatusEl.style.color = '#4ade80';
+    const audioTrack = cameraStream.getAudioTracks()[0];
+    if (audioTrack) {
+        isAudioMuted = !isAudioMuted;
+        audioTrack.enabled = !isAudioMuted;
+        
+        if (isAudioMuted) {
+            muteBtn.textContent = '🔇 Unmute Audio';
+            muteBtn.style.background = '#ef4444';
+            audioStatusEl.textContent = 'MUTED';
+            audioStatusEl.style.color = '#ef4444';
+        } else {
+            muteBtn.textContent = '🎤 Mute Audio';
+            muteBtn.style.background = '#667eea';
+            audioStatusEl.textContent = 'ON';
+            audioStatusEl.style.color = '#4ade80';
+        }
     }
 }
 
@@ -152,43 +145,50 @@ async function toggleCamera() {
                 audio: false
             });
             
-            currentVideoTrack = newCameraStream.getVideoTracks()[0];
+            const newVideoTrack = newCameraStream.getVideoTracks()[0];
+            const audioTrack = cameraStream.getAudioTracks()[0];
             
-            // Recreate camera stream with new video track
-            const oldCameraStream = cameraStream;
-            cameraStream = new MediaStream();
-            cameraStream.addTrack(currentVideoTrack);
-            if (audioTrack) {
-                cameraStream.addTrack(audioTrack);
+            // Stop old video track if exists
+            const oldVideoTrack = cameraStream.getVideoTracks()[0];
+            if (oldVideoTrack) {
+                oldVideoTrack.stop();
+                cameraStream.removeTrack(oldVideoTrack);
             }
             
+            // Add new video track to camera stream
+            cameraStream.addTrack(newVideoTrack);
+            
+            // Update local video
             localVideo.srcObject = cameraStream;
             
-            // Replace video track in all existing peer connections
+            // Replace track for ALL peer connections
+            const replacePromises = [];
             for (const [viewerId, pc] of Object.entries(peerConnections)) {
                 const senders = pc.getSenders();
-                
-                // Find the sender that should have video (might be null if camera was off)
-                let videoSender = senders.find(sender => 
-                    sender.track && sender.track.kind === 'video' && sender.track !== screenStream?.getVideoTracks()[0]
+                const videoSender = senders.find(s => 
+                    s.track?.kind === 'video' || (s.track === null && s.transceiver?.currentDirection?.includes('send'))
                 );
                 
-                // If no video sender found, look for one without a track
-                if (!videoSender) {
-                    videoSender = senders.find(sender => 
-                        !sender.track || (sender.track.kind === 'video' && sender.track.readyState === 'ended')
-                    );
-                }
-                
                 if (videoSender) {
-                    await videoSender.replaceTrack(currentVideoTrack);
-                    console.log('Replaced video track for viewer:', viewerId);
+                    replacePromises.push(
+                        videoSender.replaceTrack(newVideoTrack).then(() => {
+                            console.log(`[${viewerId}] Camera track replaced`);
+                        }).catch(err => {
+                            console.error(`[${viewerId}] Failed to replace track:`, err);
+                        })
+                    );
                 } else {
-                    // No video sender exists, add the track
-                    pc.addTrack(currentVideoTrack, cameraStream);
-                    console.log('Added new video track for viewer:', viewerId);
+                    // Add track if no sender found
+                    try {
+                        pc.addTrack(newVideoTrack, cameraStream);
+                        console.log(`[${viewerId}] Camera track added`);
+                    } catch (err) {
+                        console.error(`[${viewerId}] Failed to add track:`, err);
+                    }
                 }
             }
+            
+            await Promise.all(replacePromises);
             
             isCameraOff = false;
             toggleCameraBtn.textContent = '📹 Turn Camera Off';
@@ -197,7 +197,7 @@ async function toggleCamera() {
             cameraStatusEl.style.color = '#4ade80';
             localVideo.style.opacity = '1';
             
-            console.log('Camera turned ON - track active:', currentVideoTrack.readyState);
+            console.log('✓ Camera turned ON for all viewers');
             
         } catch (error) {
             console.error('Error restarting camera:', error);
@@ -206,30 +206,30 @@ async function toggleCamera() {
         
     } else {
         // Turn camera OFF
-        if (currentVideoTrack) {
-            currentVideoTrack.stop();
+        const videoTrack = cameraStream.getVideoTracks()[0];
+        if (videoTrack) {
+            videoTrack.stop();
+            cameraStream.removeTrack(videoTrack);
             
-            // Remove from local stream but keep audio
-            const oldStream = cameraStream;
-            cameraStream = new MediaStream();
-            if (audioTrack) {
-                cameraStream.addTrack(audioTrack);
-            }
-            
-            // Replace with null in all peer connections
+            // Replace with null for all peer connections
+            const replacePromises = [];
             for (const [viewerId, pc] of Object.entries(peerConnections)) {
                 const senders = pc.getSenders();
-                const videoSender = senders.find(sender => 
-                    sender.track && sender.track.kind === 'video' && sender.track.id === currentVideoTrack.id
+                const videoSender = senders.find(s => 
+                    s.track?.kind === 'video' && s.track.id === videoTrack.id
                 );
                 
                 if (videoSender) {
-                    await videoSender.replaceTrack(null);
-                    console.log('Removed video track for viewer:', viewerId);
+                    replacePromises.push(
+                        videoSender.replaceTrack(null).then(() => {
+                            console.log(`[${viewerId}] Camera track removed`);
+                        })
+                    );
                 }
             }
             
-            currentVideoTrack = null;
+            await Promise.all(replacePromises);
+            
             isCameraOff = true;
             toggleCameraBtn.textContent = '📹 Turn Camera On';
             toggleCameraBtn.style.background = '#ef4444';
@@ -237,7 +237,7 @@ async function toggleCamera() {
             cameraStatusEl.style.color = '#ef4444';
             localVideo.style.opacity = '0.3';
             
-            console.log('Camera turned OFF');
+            console.log('✓ Camera turned OFF for all viewers');
         }
     }
 }
@@ -270,7 +270,6 @@ socket.on('stream_started', (data) => {
     heartbeatInterval = setInterval(() => {
         if (cameraId) {
             socket.emit('heartbeat', { camera_id: cameraId });
-            console.log('Heartbeat sent');
         }
     }, 30000);
     
@@ -279,7 +278,7 @@ socket.on('stream_started', (data) => {
 
 socket.on('new_viewer', async (data) => {
     const viewerId = data.viewer_id;
-    console.log('New viewer joined. Camera OFF?', isCameraOff, 'Video track exists?', !!currentVideoTrack);
+    console.log(`[${viewerId}] New viewer joining - Camera: ${isCameraOff ? 'OFF' : 'ON'}, Screen: ${hasScreenShare ? 'YES' : 'NO'}`);
     
     viewerCount++;
     viewerCountEl.textContent = viewerCount;
@@ -287,30 +286,36 @@ socket.on('new_viewer', async (data) => {
     const peerConnection = new RTCPeerConnection(rtcConfig);
     peerConnections[viewerId] = peerConnection;
     
-    // Add camera video track if camera is ON and track exists
-    if (currentVideoTrack && !isCameraOff && currentVideoTrack.readyState === 'live') {
-        peerConnection.addTrack(currentVideoTrack, cameraStream);
-        console.log('Added LIVE camera video track for new viewer');
-    } else {
-        console.log('Skipped camera video - OFF:', isCameraOff, 'Track state:', currentVideoTrack?.readyState);
-    }
+    // Add all current tracks to the new peer connection
+    const tracksAdded = [];
     
-    // Always add audio track if available
-    if (audioTrack && audioTrack.readyState === 'live') {
-        peerConnection.addTrack(audioTrack, cameraStream);
-        console.log('Added audio track for new viewer');
-    }
-    
-    // Always add screen share if available
-    if (screenStream && hasScreenShare) {
-        const screenTracks = screenStream.getTracks();
-        screenTracks.forEach(track => {
+    // Camera tracks
+    if (cameraStream) {
+        cameraStream.getTracks().forEach(track => {
+            // Only add video track if camera is ON
+            if (track.kind === 'video' && isCameraOff) {
+                console.log(`[${viewerId}] Skipping camera video (OFF)`);
+                return;
+            }
+            
             if (track.readyState === 'live') {
-                peerConnection.addTrack(track, screenStream);
-                console.log('Added screen track for new viewer:', track.kind);
+                peerConnection.addTrack(track, cameraStream);
+                tracksAdded.push(`${track.kind} (camera)`);
             }
         });
     }
+    
+    // Screen tracks
+    if (screenStream && hasScreenShare) {
+        screenStream.getTracks().forEach(track => {
+            if (track.readyState === 'live') {
+                peerConnection.addTrack(track, screenStream);
+                tracksAdded.push(`${track.kind} (screen)`);
+            }
+        });
+    }
+    
+    console.log(`[${viewerId}] Added tracks:`, tracksAdded.join(', '));
     
     peerConnection.onicecandidate = (event) => {
         if (event.candidate) {
@@ -322,14 +327,15 @@ socket.on('new_viewer', async (data) => {
     };
     
     peerConnection.onconnectionstatechange = () => {
-        console.log(`Connection state with ${viewerId}:`, peerConnection.connectionState);
-        if (peerConnection.connectionState === 'disconnected' || 
-            peerConnection.connectionState === 'failed' ||
-            peerConnection.connectionState === 'closed') {
+        const state = peerConnection.connectionState;
+        console.log(`[${viewerId}] Connection state: ${state}`);
+        
+        if (state === 'disconnected' || state === 'failed' || state === 'closed') {
             if (peerConnections[viewerId]) {
                 delete peerConnections[viewerId];
                 viewerCount = Math.max(0, viewerCount - 1);
                 viewerCountEl.textContent = viewerCount;
+                console.log(`[${viewerId}] Removed from viewers`);
             }
         }
     };
@@ -343,8 +349,10 @@ socket.on('new_viewer', async (data) => {
             offer: offer,
             hasScreenShare: hasScreenShare
         });
+        
+        console.log(`[${viewerId}] Offer sent`);
     } catch (error) {
-        console.error('Error creating offer:', error);
+        console.error(`[${viewerId}] Error creating offer:`, error);
     }
 });
 
@@ -355,9 +363,9 @@ socket.on('answer', async (data) => {
     if (peerConnection) {
         try {
             await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-            console.log('Answer set for viewer:', viewerId);
+            console.log(`[${viewerId}] Answer received and set`);
         } catch (error) {
-            console.error('Error setting remote description:', error);
+            console.error(`[${viewerId}] Error setting remote description:`, error);
         }
     }
 });
@@ -370,7 +378,7 @@ socket.on('ice_candidate', async (data) => {
         try {
             await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
         } catch (error) {
-            console.error('Error adding ICE candidate:', error);
+            console.error(`[${viewerId}] Error adding ICE candidate:`, error);
         }
     }
 });
@@ -386,8 +394,8 @@ socket.on('disconnect', () => {
     console.log('Attempting to reconnect...');
 });
 
-socket.on('heartbeat_ack', (data) => {
-    console.log('Heartbeat acknowledged:', data.status);
+socket.on('heartbeat_ack', () => {
+    // Heartbeat acknowledged silently
 });
 
 function copyShareLink() {
@@ -422,9 +430,6 @@ window.addEventListener('beforeunload', () => {
     }
     if (screenStream) {
         screenStream.getTracks().forEach(track => track.stop());
-    }
-    if (currentVideoTrack) {
-        currentVideoTrack.stop();
     }
     Object.values(peerConnections).forEach(pc => pc.close());
 });
