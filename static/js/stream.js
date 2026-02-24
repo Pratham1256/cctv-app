@@ -23,6 +23,7 @@ let isAudioMuted = false;
 let isCameraOff = false;
 let heartbeatInterval = null;
 let hasScreenShare = false;
+let audioTrack = null; // Store audio track separately
 
 const rtcConfig = {
     iceServers: [
@@ -51,6 +52,9 @@ async function startStreaming() {
                 autoGainControl: true
             }
         });
+        
+        // Store audio track separately
+        audioTrack = cameraStream.getAudioTracks()[0];
         
         localVideo.srcObject = cameraStream;
         
@@ -103,6 +107,7 @@ function stopStreaming() {
         screenStream.getTracks().forEach(track => track.stop());
     }
     localVideo.srcObject = null;
+    audioTrack = null;
     
     Object.values(peerConnections).forEach(pc => pc.close());
     peerConnections = {};
@@ -111,50 +116,107 @@ function stopStreaming() {
 }
 
 function toggleMute() {
-    if (!cameraStream) return;
+    if (!audioTrack) return;
     
-    const audioTrack = cameraStream.getAudioTracks()[0];
-    if (audioTrack) {
-        isAudioMuted = !isAudioMuted;
-        audioTrack.enabled = !isAudioMuted;
-        
-        if (isAudioMuted) {
-            muteBtn.textContent = '🔇 Unmute Audio';
-            muteBtn.style.background = '#ef4444';
-            audioStatusEl.textContent = 'MUTED';
-            audioStatusEl.style.color = '#ef4444';
-        } else {
-            muteBtn.textContent = '🎤 Mute Audio';
-            muteBtn.style.background = '#667eea';
-            audioStatusEl.textContent = 'ON';
-            audioStatusEl.style.color = '#4ade80';
-        }
+    isAudioMuted = !isAudioMuted;
+    audioTrack.enabled = !isAudioMuted;
+    
+    if (isAudioMuted) {
+        muteBtn.textContent = '🔇 Unmute Audio';
+        muteBtn.style.background = '#ef4444';
+        audioStatusEl.textContent = 'MUTED';
+        audioStatusEl.style.color = '#ef4444';
+    } else {
+        muteBtn.textContent = '🎤 Mute Audio';
+        muteBtn.style.background = '#667eea';
+        audioStatusEl.textContent = 'ON';
+        audioStatusEl.style.color = '#4ade80';
     }
 }
 
-function toggleCamera() {
-    if (!cameraStream) return;
-    
-    const videoTrack = cameraStream.getVideoTracks()[0];
-    if (videoTrack) {
-        isCameraOff = !isCameraOff;
-        videoTrack.enabled = !isCameraOff;
-        
-        if (isCameraOff) {
-            toggleCameraBtn.textContent = '📹 Turn Camera On';
-            toggleCameraBtn.style.background = '#ef4444';
-            cameraStatusEl.textContent = 'OFF';
-            cameraStatusEl.style.color = '#ef4444';
-            localVideo.style.opacity = '0.3';
-        } else {
+async function toggleCamera() {
+    if (isCameraOff) {
+        // Turn camera ON - restart camera stream
+        try {
+            const newCameraStream = await navigator.mediaDevices.getUserMedia({
+                video: { 
+                    width: { ideal: 1280 },
+                    height: { ideal: 720 }
+                },
+                audio: false // Don't request audio again
+            });
+            
+            const newVideoTrack = newCameraStream.getVideoTracks()[0];
+            
+            // Replace video track in local preview
+            const oldVideoTrack = cameraStream.getVideoTracks()[0];
+            if (oldVideoTrack) {
+                cameraStream.removeTrack(oldVideoTrack);
+            }
+            cameraStream.addTrack(newVideoTrack);
+            
+            // Add audio track back to the stream for local display
+            if (audioTrack) {
+                cameraStream.addTrack(audioTrack);
+            }
+            
+            localVideo.srcObject = cameraStream;
+            
+            // Replace video track in all peer connections
+            for (const [viewerId, pc] of Object.entries(peerConnections)) {
+                const senders = pc.getSenders();
+                const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video' && sender.track.id === oldVideoTrack?.id);
+                
+                if (videoSender) {
+                    await videoSender.replaceTrack(newVideoTrack);
+                    console.log('Replaced video track for viewer:', viewerId);
+                }
+            }
+            
+            isCameraOff = false;
             toggleCameraBtn.textContent = '📹 Turn Camera Off';
             toggleCameraBtn.style.background = '#667eea';
             cameraStatusEl.textContent = 'ON';
             cameraStatusEl.style.color = '#4ade80';
             localVideo.style.opacity = '1';
+            
+            console.log('Camera turned ON');
+            
+        } catch (error) {
+            console.error('Error restarting camera:', error);
+            alert('Could not restart camera. Please check permissions.');
         }
         
-        console.log('Camera toggled:', isCameraOff ? 'OFF' : 'ON');
+    } else {
+        // Turn camera OFF - stop camera track
+        const videoTrack = cameraStream.getVideoTracks()[0];
+        if (videoTrack) {
+            // Stop the track (turns off camera light)
+            videoTrack.stop();
+            
+            // Remove from stream
+            cameraStream.removeTrack(videoTrack);
+            
+            // Replace with null track in all peer connections
+            for (const [viewerId, pc] of Object.entries(peerConnections)) {
+                const senders = pc.getSenders();
+                const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video' && sender.track.id === videoTrack.id);
+                
+                if (videoSender) {
+                    await videoSender.replaceTrack(null);
+                    console.log('Removed video track for viewer:', viewerId);
+                }
+            }
+            
+            isCameraOff = true;
+            toggleCameraBtn.textContent = '📹 Turn Camera On';
+            toggleCameraBtn.style.background = '#ef4444';
+            cameraStatusEl.textContent = 'OFF';
+            cameraStatusEl.style.color = '#ef4444';
+            localVideo.style.opacity = '0.3';
+            
+            console.log('Camera turned OFF - light should be off');
+        }
     }
 }
 
